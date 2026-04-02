@@ -75,9 +75,26 @@ def _install_fake_tools_package(*, credential_mounts=None):
             self.cwd = cwd
             self.timeout = timeout
             self.env = env or {}
+            self._snapshot_path = None
+            self._cwdfile_path = None
+            self._snapshot_ready = False
+            self._session_id = ""
 
         def _prepare_command(self, command: str):
             return command, None
+
+        def _wrap_command(self, command: str, cwd: str) -> str:
+            """Simplified wrapper for tests — just returns the command."""
+            return command
+
+        def _update_cwd_from_file(self):
+            pass
+
+        def stop(self):
+            self.cleanup()
+
+        def cleanup(self):
+            pass
 
     sys.modules["tools.environments.base"] = types.SimpleNamespace(BaseEnvironment=_DummyBaseEnvironment)
     sys.modules["tools.managed_tool_gateway"] = types.SimpleNamespace(
@@ -110,7 +127,8 @@ class _FakeResponse:
 def test_managed_modal_execute_polls_until_completed(monkeypatch):
     _install_fake_tools_package()
     managed_modal = _load_tool_module("tools.environments.managed_modal", "environments/managed_modal.py")
-    modal_common = sys.modules["tools.environments.modal_common"]
+    # time.sleep / time.monotonic now live in managed_modal (not modal_common)
+    modal_common = managed_modal
 
     calls = []
     poll_count = {"value": 0}
@@ -173,7 +191,8 @@ def test_managed_modal_create_sends_a_stable_idempotency_key(monkeypatch):
 def test_managed_modal_execute_cancels_on_interrupt(monkeypatch):
     interrupt_event = _install_fake_tools_package()
     managed_modal = _load_tool_module("tools.environments.managed_modal", "environments/managed_modal.py")
-    modal_common = sys.modules["tools.environments.modal_common"]
+    # time.sleep / time.monotonic now live in managed_modal (not modal_common)
+    modal_common = managed_modal
 
     calls = []
 
@@ -215,7 +234,8 @@ def test_managed_modal_execute_cancels_on_interrupt(monkeypatch):
 def test_managed_modal_execute_returns_descriptive_error_on_missing_exec(monkeypatch):
     _install_fake_tools_package()
     managed_modal = _load_tool_module("tools.environments.managed_modal", "environments/managed_modal.py")
-    modal_common = sys.modules["tools.environments.modal_common"]
+    # time.sleep / time.monotonic now live in managed_modal (not modal_common)
+    modal_common = managed_modal
 
     def fake_request(method, url, headers=None, json=None, timeout=None):
         if method == "POST" and url.endswith("/v1/sandboxes"):
@@ -293,7 +313,8 @@ def test_managed_modal_rejects_host_credential_passthrough():
 def test_managed_modal_execute_times_out_and_cancels(monkeypatch):
     _install_fake_tools_package()
     managed_modal = _load_tool_module("tools.environments.managed_modal", "environments/managed_modal.py")
-    modal_common = sys.modules["tools.environments.modal_common"]
+    # time.sleep / time.monotonic now live in managed_modal (not modal_common)
+    modal_common = managed_modal
 
     calls = []
     monotonic_values = iter([0.0, 12.5])

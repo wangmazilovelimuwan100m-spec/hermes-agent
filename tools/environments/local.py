@@ -204,58 +204,6 @@ def _find_bash() -> str:
 _find_shell = _find_bash
 
 
-# Noise lines emitted by interactive shells when stdin is not a terminal.
-# Used as a fallback when output fence markers are missing.
-_SHELL_NOISE_SUBSTRINGS = (
-    # bash
-    "bash: cannot set terminal process group",
-    "bash: no job control in this shell",
-    "no job control in this shell",
-    "cannot set terminal process group",
-    "tcsetattr: Inappropriate ioctl for device",
-    # zsh / oh-my-zsh / macOS terminal session
-    "Restored session:",
-    "Saving session...",
-    "Last login:",
-    "command not found:",
-    "Oh My Zsh",
-    "compinit:",
-)
-
-
-def _clean_shell_noise(output: str) -> str:
-    """Strip shell startup/exit warnings that leak when using -i without a TTY.
-
-    Removes lines matching known noise patterns from both the beginning
-    and end of the output.  Lines in the middle are left untouched.
-    """
-
-    def _is_noise(line: str) -> bool:
-        return any(noise in line for noise in _SHELL_NOISE_SUBSTRINGS)
-
-    lines = output.split("\n")
-
-    # Strip leading noise
-    while lines and _is_noise(lines[0]):
-        lines.pop(0)
-
-    # Strip trailing noise (walk backwards, skip empty lines from split)
-    end = len(lines) - 1
-    while end >= 0 and (not lines[end] or _is_noise(lines[end])):
-        end -= 1
-
-    if end < 0:
-        return ""
-
-    cleaned = lines[: end + 1]
-    result = "\n".join(cleaned)
-
-    # Preserve trailing newline if original had one
-    if output.endswith("\n") and result and not result.endswith("\n"):
-        result += "\n"
-    return result
-
-
 # Standard PATH entries for environments with minimal PATH (e.g. systemd services).
 # Includes macOS Homebrew paths (/opt/homebrew/* for Apple Silicon).
 _SANE_PATH = (
@@ -283,30 +231,6 @@ def _make_run_env(env: dict) -> dict:
     if "/usr/bin" not in existing_path.split(":"):
         run_env["PATH"] = f"{existing_path}:{_SANE_PATH}" if existing_path else _SANE_PATH
     return run_env
-
-
-def _extract_fenced_output(raw: str) -> str:
-    """Extract real command output from between fence markers.
-
-    The execute() method wraps each command with printf(FENCE) markers.
-    This function finds the first and last fence and returns only the
-    content between them, which is the actual command output free of
-    any shell init/exit noise.
-
-    Falls back to pattern-based _clean_shell_noise if fences are missing.
-    """
-    first = raw.find(_OUTPUT_FENCE)
-    if first == -1:
-        return _clean_shell_noise(raw)
-
-    start = first + len(_OUTPUT_FENCE)
-    last = raw.rfind(_OUTPUT_FENCE)
-
-    if last <= first:
-        # Only start fence found (e.g. user command called `exit`)
-        return _clean_shell_noise(raw[start:])
-
-    return raw[start:last]
 
 
 class LocalEnvironment(BaseEnvironment):
