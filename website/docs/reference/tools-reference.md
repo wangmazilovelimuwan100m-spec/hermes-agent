@@ -6,7 +6,7 @@ description: "Authoritative reference for Hermes built-in tools, grouped by tool
 
 # Built-in Tools Reference
 
-This page documents all 54 built-in tools in the Hermes tool registry, grouped by toolset. Availability varies by platform, credentials, and enabled toolsets.
+This page documents all 55 built-in tools in the Hermes tool registry, grouped by toolset. Availability varies by platform, credentials, and enabled toolsets.
 
 **Quick counts:** 12 browser tools, 4 file tools, 10 RL tools, 4 Home Assistant tools, 2 terminal tools, 2 web tools, 5 Feishu tools, and 15 standalone tools across other toolsets.
 
