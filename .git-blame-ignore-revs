@@ -1,0 +1,5 @@
+# hermes_agent package restructure (PR 1/3)
+# Commit 2: pure git mv — all source files into hermes_agent/
+65ca3ba93b3fa7fd2b15af5b62d54020061f3672
+# Commit 3: rewrite all imports for hermes_agent package
+4b16341975a1217588054f567d0f76dc5a3cc481
