@@ -49,21 +49,24 @@ export interface Translations {
   app: {
     brand: string;
     brandShort: string;
-    webUi: string;
+    closeNavigation: string;
     footer: {
       name: string;
       org: string;
     };
     nav: {
-      status: string;
-      sessions: string;
       analytics: string;
-      logs: string;
-      cron: string;
-      skills: string;
       config: string;
+      cron: string;
       keys: string;
+      logs: string;
+      sessions: string;
+      skills: string;
+      status: string;
     };
+    navigation: string;
+    openNavigation: string;
+    webUi: string;
   };
 
   // ── Status page ──

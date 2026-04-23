@@ -47,21 +47,24 @@ export const zh: Translations = {
   app: {
     brand: "Hermes Agent",
     brandShort: "HA",
-    webUi: "管理面板",
+    closeNavigation: "关闭导航",
     footer: {
       name: "Hermes Agent",
       org: "Nous Research",
     },
     nav: {
-      status: "状态",
-      sessions: "会话",
       analytics: "分析",
-      logs: "日志",
-      cron: "定时任务",
-      skills: "技能",
       config: "配置",
+      cron: "定时任务",
       keys: "密钥",
+      logs: "日志",
+      sessions: "会话",
+      skills: "技能",
+      status: "状态",
     },
+    navigation: "导航",
+    openNavigation: "打开导航",
+    webUi: "管理面板",
   },
 
   status: {

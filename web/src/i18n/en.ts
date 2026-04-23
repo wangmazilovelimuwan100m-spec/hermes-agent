@@ -47,21 +47,24 @@ export const en: Translations = {
   app: {
     brand: "Hermes Agent",
     brandShort: "HA",
-    webUi: "Web UI",
+    closeNavigation: "Close navigation",
     footer: {
       name: "Hermes Agent",
       org: "Nous Research",
     },
     nav: {
-      status: "Status",
-      sessions: "Sessions",
       analytics: "Analytics",
-      logs: "Logs",
-      cron: "Cron",
-      skills: "Skills",
       config: "Config",
+      cron: "Cron",
       keys: "Keys",
+      logs: "Logs",
+      sessions: "Sessions",
+      skills: "Skills",
+      status: "Status",
     },
+    navigation: "Navigation",
+    openNavigation: "Open navigation",
+    webUi: "Web UI",
   },
 
   status: {
