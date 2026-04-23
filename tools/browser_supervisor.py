@@ -54,6 +54,11 @@ FRAME_TREE_MAX_OOPIF_DEPTH = 2
 # Ring buffer of recent console-level events (used later by PR 2 diagnostics).
 CONSOLE_HISTORY_MAX = 50
 
+# Keep the last N closed dialogs in ``recent_dialogs`` so agents on backends
+# that auto-dismiss server-side (e.g. Browserbase) can still observe that a
+# dialog fired, even if they couldn't respond to it in time.
+RECENT_DIALOGS_MAX = 20
+
 
 # ── Data model ────────────────────────────────────────────────────────────────
 
@@ -77,6 +82,35 @@ class PendingDialog:
             "message": self.message,
             "default_prompt": self.default_prompt,
             "opened_at": self.opened_at,
+            "frame_id": self.frame_id,
+        }
+
+
+@dataclass
+class DialogRecord:
+    """A historical record of a dialog that was opened and then handled.
+
+    Retained in ``recent_dialogs`` for a short window so agents on backends
+    that auto-dismiss dialogs server-side (Browserbase) can still observe
+    that a dialog fired, even though they couldn't respond to it.
+    """
+
+    id: str
+    type: str
+    message: str
+    opened_at: float
+    closed_at: float
+    closed_by: str  # "agent" | "auto_policy" | "remote" | "watchdog"
+    frame_id: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "type": self.type,
+            "message": self.message,
+            "opened_at": self.opened_at,
+            "closed_at": self.closed_at,
+            "closed_by": self.closed_by,
             "frame_id": self.frame_id,
         }
 
@@ -133,6 +167,7 @@ class SupervisorSnapshot:
     """
 
     pending_dialogs: Tuple[PendingDialog, ...]
+    recent_dialogs: Tuple[DialogRecord, ...]
     frame_tree: Dict[str, Any]
     console_errors: Tuple[ConsoleEvent, ...]
     active: bool  # False if supervisor is detached/stopped
@@ -141,10 +176,13 @@ class SupervisorSnapshot:
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize for inclusion in ``browser_snapshot`` output."""
-        return {
+        out: Dict[str, Any] = {
             "pending_dialogs": [d.to_dict() for d in self.pending_dialogs],
             "frame_tree": self.frame_tree,
         }
+        if self.recent_dialogs:
+            out["recent_dialogs"] = [d.to_dict() for d in self.recent_dialogs]
+        return out
 
 
 # ── Supervisor core ───────────────────────────────────────────────────────────
@@ -188,6 +226,7 @@ class CDPSupervisor:
         # State protected by ``_state_lock`` for cross-thread reads.
         self._state_lock = threading.Lock()
         self._pending_dialogs: Dict[str, PendingDialog] = {}
+        self._recent_dialogs: List[DialogRecord] = []
         self._frames: Dict[str, FrameInfo] = {}
         self._console_events: List[ConsoleEvent] = []
         self._active = False
@@ -277,11 +316,13 @@ class CDPSupervisor:
         """Return an immutable snapshot of current state."""
         with self._state_lock:
             dialogs = tuple(self._pending_dialogs.values())
+            recent = tuple(self._recent_dialogs[-RECENT_DIALOGS_MAX:])
             frames_tree = self._build_frame_tree_locked()
             console = tuple(self._console_events[-CONSOLE_HISTORY_MAX:])
             active = self._active
         return SupervisorSnapshot(
             pending_dialogs=dialogs,
+            recent_dialogs=recent,
             frame_tree=frames_tree,
             console_errors=console,
             active=active,
@@ -384,55 +425,98 @@ class CDPSupervisor:
     async def _run(self) -> None:
         """Top-level supervisor coroutine.
 
-        1. Open the WebSocket.
-        2. Attach to a page target (create one if none exist).
-        3. Enable Page/Runtime/setAutoAttach on the page session.
-        4. Signal readiness; then loop reading CDP events.
-        5. On cancel or connection close, tear down.
+        Holds a reconnecting loop so we survive the remote closing the
+        WebSocket — Browserbase in particular tears down the CDP socket
+        every time a short-lived client (e.g. agent-browser's per-command
+        CDP client) disconnects.  We drop our state snapshot keys that
+        depend on specific CDP session ids, re-attach, and keep going.
         """
-        try:
-            self._ws = await asyncio.wait_for(
-                websockets.connect(self.cdp_url, max_size=50 * 1024 * 1024),
-                timeout=10.0,
-            )
-        except Exception as e:
-            self._start_error = e
-            self._ready_event.set()
-            return
+        attempt = 0
+        last_success_at = 0.0
+        backoff = 0.5
+        while not self._stop_requested:
+            try:
+                self._ws = await asyncio.wait_for(
+                    websockets.connect(self.cdp_url, max_size=50 * 1024 * 1024),
+                    timeout=10.0,
+                )
+            except Exception as e:
+                attempt += 1
+                if not self._ready_event.is_set():
+                    # Never connected once — fatal for start().
+                    self._start_error = e
+                    self._ready_event.set()
+                    return
+                logger.warning(
+                    "CDP supervisor %s: connect failed (attempt %s): %s",
+                    self.task_id, attempt, e,
+                )
+                await asyncio.sleep(min(backoff, 10.0))
+                backoff = min(backoff * 2, 10.0)
+                continue
 
-        reader_task = asyncio.create_task(self._read_loop(), name="cdp-reader")
-        try:
-            await self._attach_initial_page()
-            with self._state_lock:
-                self._active = True
-            self._ready_event.set()
-            # Run until the reader returns (WebSocket closed by stop() or peer).
-            await reader_task
-        except BaseException as e:
-            if not self._ready_event.is_set():
-                self._start_error = e
-                self._ready_event.set()
-            raise
-        finally:
-            # Cancel reader if it's still alive (e.g. attach raised).
-            if not reader_task.done():
-                reader_task.cancel()
-                try:
-                    await reader_task
-                except (asyncio.CancelledError, Exception):
-                    pass
-            # Cancel any other background tasks (dialog watchdog handles
-            # are TimerHandles, not Tasks, so they just need .cancel()).
-            for handle in list(self._dialog_watchdogs.values()):
-                handle.cancel()
-            self._dialog_watchdogs.clear()
-            ws = self._ws
-            self._ws = None
-            if ws is not None:
-                try:
-                    await ws.close()
-                except Exception:
-                    pass
+            reader_task = asyncio.create_task(self._read_loop(), name="cdp-reader")
+            try:
+                # Reset per-connection session state so stale ids don't hang
+                # around after a reconnect.
+                self._page_session_id = None
+                self._child_sessions.clear()
+                # We deliberately keep `_pending_dialogs` and `_frames` —
+                # they're reconciled as the supervisor resubscribes and
+                # receives fresh events.  Worst case: an agent sees a stale
+                # dialog entry that the new session's handleJavaScriptDialog
+                # call rejects with "no dialog is showing" (logged, not
+                # surfaced).
+                await self._attach_initial_page()
+                with self._state_lock:
+                    self._active = True
+                last_success_at = time.time()
+                backoff = 0.5  # reset after a successful attach
+                if not self._ready_event.is_set():
+                    self._ready_event.set()
+                # Run until the reader returns.
+                await reader_task
+            except BaseException as e:
+                if not self._ready_event.is_set():
+                    # Never got to ready — propagate to start().
+                    self._start_error = e
+                    self._ready_event.set()
+                    raise
+                logger.warning(
+                    "CDP supervisor %s: session dropped after %.1fs: %s",
+                    self.task_id,
+                    time.time() - last_success_at,
+                    e,
+                )
+            finally:
+                with self._state_lock:
+                    self._active = False
+                if not reader_task.done():
+                    reader_task.cancel()
+                    try:
+                        await reader_task
+                    except (asyncio.CancelledError, Exception):
+                        pass
+                for handle in list(self._dialog_watchdogs.values()):
+                    handle.cancel()
+                self._dialog_watchdogs.clear()
+                ws = self._ws
+                self._ws = None
+                if ws is not None:
+                    try:
+                        await ws.close()
+                    except Exception:
+                        pass
+
+            if self._stop_requested:
+                return
+
+            # Reconnect: brief backoff, then reattach.
+            logger.debug(
+                "CDP supervisor %s: reconnecting in %.1fs...", self.task_id, backoff,
+            )
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, 10.0)
 
     async def _attach_initial_page(self) -> None:
         """Find a page target, attach flattened session, enable domains."""
@@ -547,30 +631,55 @@ class CDPSupervisor:
             cdp_session_id=session_id or self._page_session_id or "",
             frame_id=params.get("frameId"),
         )
-        with self._state_lock:
-            self._pending_dialogs[dialog.id] = dialog
 
         if self.dialog_policy == DIALOG_POLICY_AUTO_DISMISS:
-            # Schedule as a task so the read loop can keep consuming frames —
-            # the CDP response to handleJavaScriptDialog arrives on the same
-            # WebSocket, and awaiting it here would deadlock the reader.
+            # Archive immediately with the policy tag so the ``closed`` event
+            # arriving right after our handleJavaScriptDialog call doesn't
+            # re-archive it as "remote".
+            with self._state_lock:
+                self._archive_dialog_locked(dialog, "auto_policy")
             asyncio.create_task(
-                self._handle_dialog_cdp(dialog, accept=False, prompt_text="")
+                self._auto_handle_dialog(dialog, accept=False, prompt_text="")
             )
         elif self.dialog_policy == DIALOG_POLICY_AUTO_ACCEPT:
+            with self._state_lock:
+                self._archive_dialog_locked(dialog, "auto_policy")
             asyncio.create_task(
-                self._handle_dialog_cdp(
+                self._auto_handle_dialog(
                     dialog, accept=True, prompt_text=dialog.default_prompt
                 )
             )
         else:
-            # must_respond → arm watchdog so a buggy agent can't stall forever.
+            # must_respond → add to pending and arm watchdog.
+            with self._state_lock:
+                self._pending_dialogs[dialog.id] = dialog
             loop = asyncio.get_running_loop()
             handle = loop.call_later(
                 self.dialog_timeout_s,
                 lambda: asyncio.create_task(self._dialog_timeout_expired(dialog.id)),
             )
             self._dialog_watchdogs[dialog.id] = handle
+
+    async def _auto_handle_dialog(
+        self, dialog: PendingDialog, *, accept: bool, prompt_text: str
+    ) -> None:
+        """Send handleJavaScriptDialog for auto_dismiss/auto_accept.
+
+        Dialog has already been archived by the caller (``_on_dialog_opening``);
+        this just fires the CDP call so the page unblocks.
+        """
+        params: Dict[str, Any] = {"accept": accept}
+        if dialog.type == "prompt":
+            params["promptText"] = prompt_text
+        try:
+            await self._cdp(
+                "Page.handleJavaScriptDialog",
+                params,
+                session_id=dialog.cdp_session_id or None,
+                timeout=5.0,
+            )
+        except Exception as e:
+            logger.debug("auto-handle CDP call failed for %s: %s", dialog.id, e)
 
     async def _dialog_timeout_expired(self, dialog_id: str) -> None:
         with self._state_lock:
@@ -585,14 +694,42 @@ class CDPSupervisor:
             self.dialog_timeout_s,
         )
         try:
-            await self._handle_dialog_cdp(dialog, accept=False, prompt_text="")
+            # Archive with watchdog tag BEFORE calling _handle_dialog_cdp
+            # (which archives with auto_policy/agent). We want the record to
+            # reflect the watchdog expiry.
+            with self._state_lock:
+                if dialog_id in self._pending_dialogs:
+                    self._pending_dialogs.pop(dialog_id, None)
+                    self._archive_dialog_locked(dialog, "watchdog")
+            # Still send the CDP dismiss so the page actually unblocks.
+            await self._cdp(
+                "Page.handleJavaScriptDialog",
+                {"accept": False},
+                session_id=dialog.cdp_session_id or None,
+                timeout=5.0,
+            )
         except Exception as e:
             logger.debug("auto-dismiss failed for %s: %s", dialog_id, e)
+
+    def _archive_dialog_locked(self, dialog: PendingDialog, closed_by: str) -> None:
+        """Move a pending dialog to the recent_dialogs ring buffer. Must hold state_lock."""
+        record = DialogRecord(
+            id=dialog.id,
+            type=dialog.type,
+            message=dialog.message,
+            opened_at=dialog.opened_at,
+            closed_at=time.time(),
+            closed_by=closed_by,
+            frame_id=dialog.frame_id,
+        )
+        self._recent_dialogs.append(record)
+        if len(self._recent_dialogs) > RECENT_DIALOGS_MAX * 2:
+            self._recent_dialogs = self._recent_dialogs[-RECENT_DIALOGS_MAX:]
 
     async def _handle_dialog_cdp(
         self, dialog: PendingDialog, *, accept: bool, prompt_text: str
     ) -> None:
-        """Send the Page.handleJavaScriptDialog CDP command and clear state."""
+        """Send the Page.handleJavaScriptDialog CDP command (agent path only)."""
         params: Dict[str, Any] = {"accept": accept}
         if dialog.type == "prompt":
             params["promptText"] = prompt_text
@@ -607,7 +744,9 @@ class CDPSupervisor:
             # Clear regardless — the CDP error path usually means the dialog
             # already closed (browser auto-dismissed after navigation, etc.).
             with self._state_lock:
-                self._pending_dialogs.pop(dialog.id, None)
+                if dialog.id in self._pending_dialogs:
+                    self._pending_dialogs.pop(dialog.id, None)
+                    self._archive_dialog_locked(dialog, "agent")
             handle = self._dialog_watchdogs.pop(dialog.id, None)
             if handle is not None:
                 handle.cancel()
@@ -615,17 +754,24 @@ class CDPSupervisor:
     async def _on_dialog_closed(
         self, params: Dict[str, Any], session_id: Optional[str]
     ) -> None:
-        # Chrome occasionally closes a dialog on us (e.g. navigation). Drop any
-        # tracker we still hold that matches session+message.
-        msg = params.get("message") or ""
+        # ``Page.javascriptDialogClosed`` spec has only ``result`` (bool) and
+        # ``userInput`` (string), not the original ``message``.  Match by
+        # session id and clear the oldest dialog on that session — if Chrome
+        # closed one on us (e.g. our disconnect auto-dismissed it, or the
+        # browser navigated, or Browserbase's CDP proxy auto-dismissed), there
+        # shouldn't be more than one in flight per session anyway because the
+        # JS thread is blocked while a dialog is up.
         with self._state_lock:
-            drop_ids = [
+            candidate_ids = [
                 d.id
                 for d in self._pending_dialogs.values()
-                if d.cdp_session_id == session_id and d.message == msg
+                if d.cdp_session_id == session_id
             ]
-            for did in drop_ids:
-                self._pending_dialogs.pop(did, None)
+            if candidate_ids:
+                did = candidate_ids[0]
+                dialog = self._pending_dialogs.pop(did, None)
+                if dialog is not None:
+                    self._archive_dialog_locked(dialog, "remote")
                 handle = self._dialog_watchdogs.pop(did, None)
                 if handle is not None:
                     handle.cancel()
@@ -887,6 +1033,7 @@ __all__ = [
     "DIALOG_POLICY_AUTO_ACCEPT",
     "DIALOG_POLICY_AUTO_DISMISS",
     "DIALOG_POLICY_MUST_RESPOND",
+    "DialogRecord",
     "FrameInfo",
     "PendingDialog",
     "SUPERVISOR_REGISTRY",

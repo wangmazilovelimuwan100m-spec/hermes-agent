@@ -27,15 +27,27 @@ Using throwaway probe scripts against a data-URL page that fires alerts in the
 main frame and in a same-origin srcdoc iframe, plus a cross-origin
 `https://example.com` iframe:
 
-| Backend | `Page.javascriptDialogOpening` | `Page.frameAttached` | Cross-origin iframe (OOPIF) | Runtime.evaluate inside OOPIF |
-|---|---|---|---|---|
-| Local Chrome (`--remote-debugging-port`) | ✓ | ✓ | ✓ via `Target.attachedToTarget` | ✓ on child sessionId |
-| Browserbase | ✓ | ✓ | ✓ verified with `example.com` | ✓ (`document.title = "Example Domain"`) |
-| Camofox | ✗ no CDP (REST-only) | partial via DOM snapshot | ✗ | top-level only |
+| Backend | `Page.javascriptDialogOpening` | `Page.frameAttached` | Cross-origin iframe (OOPIF) | Runtime.evaluate inside OOPIF | Agent can **respond** to dialogs |
+|---|---|---|---|---|---|
+| Local Chrome (`--remote-debugging-port`) / `/browser connect` | ✓ | ✓ | ✓ via `Target.attachedToTarget` | ✓ on child sessionId | ✓ full workflow |
+| Browserbase | ✓ (brief window) | ✓ | ✓ verified with `example.com` | ✓ (`document.title = "Example Domain"`) | ✗ Browserbase auto-dismisses dialogs server-side within ~10ms; agent can observe but not respond |
+| Camofox | ✗ no CDP (REST-only) | partial via DOM snapshot | ✗ | top-level only | ✗ |
 
-Camofox uses Firefox-via-Playwright behind a REST API and has no dialog hook
-wired into any endpoint. Addressed in a separate upstream issue/PR to
-`github.com/jo-inc/camofox-browser`.
+**Why Browserbase respond is limited:** Browserbase's CDP proxy uses Playwright
+internally, and Playwright auto-dismisses dialogs by default. The sequence we
+see is `javascriptDialogOpening` followed ~10ms later by
+`javascriptDialogClosed` — the supervisor captures the event but any
+`Page.handleJavaScriptDialog` call from us returns `"No dialog is showing"`.
+Browserbase's recommended pattern is to prevent dialogs via
+`addInitScript` before page load rather than respond to them at runtime.
+[Their docs here](https://docs.browserbase.com/platform/browser/techniques/dialogues).
+
+For full dialog-response support on Browserbase, a separate follow-up can
+add an `addInitScript` path that overrides `window.alert`/`confirm`/`prompt`
+with Python-side handlers — different mechanism, different PR.
+
+Camofox stays unsupported for this PR; follow-up upstream issue planned at
+`jo-inc/camofox-browser` requesting a dialog polling endpoint.
 
 ## Architecture
 
@@ -98,13 +110,17 @@ output before calling.
 
 ### `browser_snapshot` extension
 
-Adds two optional fields to the existing snapshot output when a supervisor is
-attached:
+Adds three optional fields to the existing snapshot output when a supervisor
+is attached:
 
 ```json
 {
   "pending_dialogs": [
     {"id": "d-1", "type": "alert", "message": "Hello", "opened_at": 1650000000.0}
+  ],
+  "recent_dialogs": [
+    {"id": "d-1", "type": "alert", "message": "...", "opened_at": 1650000000.0,
+     "closed_at": 1650000000.1, "closed_by": "remote"}
   ],
   "frame_tree": {
     "top": {"frame_id": "FRAME_A", "url": "https://example.com/", "origin": "https://example.com"},
@@ -117,13 +133,23 @@ attached:
 }
 ```
 
-Frame tree is capped to avoid blowing up the snapshot on ad-heavy pages:
-first 30 frames returned, OOPIF children past depth 2 omitted. `truncated`
-flag surfaces when limits hit; agent can consult `browser_cdp` escape hatch
-for full tree if needed.
+- **`pending_dialogs`**: dialogs currently blocking the page's JS thread.
+  The agent must call `browser_dialog(action=...)` to respond. Empty on
+  Browserbase because their CDP proxy auto-dismisses within ~10ms.
 
-No new tool schema surface for frames — the agent reads the snapshot it
-already requests.
+- **`recent_dialogs`**: ring buffer of up to 20 recently-closed dialogs with
+  a `closed_by` tag — `"agent"` (we responded), `"auto_policy"` (local
+  auto_dismiss/auto_accept), `"watchdog"` (must_respond timeout hit), or
+  `"remote"` (browser/backend closed it on us, e.g. Browserbase). This is
+  how agents on Browserbase still get visibility into what happened.
+
+- **`frame_tree`**: frame structure including cross-origin (OOPIF) children.
+  Capped at 30 entries + OOPIF depth 2 to bound snapshot size on ad-heavy
+  pages. `truncated: true` surfaces when limits were hit; agents needing
+  the full tree can use `browser_cdp` with `Page.getFrameTree`.
+
+No new tool schema surface for any of these — the agent reads the snapshot
+it already requests.
 
 ### Availability gating
 

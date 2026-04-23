@@ -307,6 +307,35 @@ def test_browser_dialog_invalid_action(chrome_cdp, supervisor_registry):
     assert "accept" in r["error"] and "dismiss" in r["error"]
 
 
+def test_recent_dialogs_ring_buffer(chrome_cdp, supervisor_registry):
+    """Closed dialogs show up in recent_dialogs with a closed_by tag."""
+    from tools.browser_supervisor import DIALOG_POLICY_AUTO_DISMISS
+
+    cdp_url, _port = chrome_cdp
+    sv = supervisor_registry.get_or_start(
+        task_id="pytest-recent",
+        cdp_url=cdp_url,
+        dialog_policy=DIALOG_POLICY_AUTO_DISMISS,
+    )
+
+    _fire_on_page(cdp_url, "setTimeout(() => alert('PYTEST-RECENT'), 50)")
+    # Wait for auto-dismiss to cycle the dialog through
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        recent = sv.snapshot().recent_dialogs
+        if recent and any("PYTEST-RECENT" in r.message for r in recent):
+            break
+        time.sleep(0.1)
+
+    recent = sv.snapshot().recent_dialogs
+    assert recent, "recent_dialogs should contain the auto-dismissed dialog"
+    match = next((r for r in recent if "PYTEST-RECENT" in r.message), None)
+    assert match is not None
+    assert match.type == "alert"
+    assert match.closed_by == "auto_policy"
+    assert match.closed_at >= match.opened_at
+
+
 def test_browser_dialog_tool_end_to_end(chrome_cdp, supervisor_registry):
     """Full agent-path check: fire an alert, call the tool handler directly."""
     from tools.browser_dialog_tool import browser_dialog

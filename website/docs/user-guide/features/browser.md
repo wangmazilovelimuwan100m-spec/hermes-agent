@@ -368,7 +368,15 @@ Responds to a native JS dialog (`alert` / `confirm` / `prompt` / `beforeunload`)
 
 **Detection happens automatically** via a persistent CDP supervisor — one WebSocket per task that subscribes to Page/Runtime/Target events. The supervisor also populates a `frame_tree` field in the snapshot so the agent can see the iframe structure of the current page, including cross-origin (OOPIF) iframes.
 
-**Availability:** same gate as `browser_cdp` — works on Browserbase sessions, local Chrome via `/browser connect`, or when `browser.cdp_url` is set. Not available on Camofox (REST-only, no CDP hook) or the default local agent-browser mode (Playwright hides its CDP port).
+**Availability matrix:**
+
+| Backend | Detection via `pending_dialogs` | Detection via `recent_dialogs` | Response (`browser_dialog` tool) |
+|---|---|---|---|
+| Local Chrome via `/browser connect` or `browser.cdp_url` | ✓ | ✓ | ✓ full workflow |
+| Browserbase | ✗ (auto-dismissed too fast) | ✓ with `closed_by="remote"` | ✗ Browserbase auto-dismisses server-side within ~10ms |
+| Camofox / default local agent-browser | ✗ | ✗ | ✗ (no CDP endpoint) |
+
+On Browserbase, follow their [recommended pattern](https://docs.browserbase.com/platform/browser/techniques/dialogues) of preventing dialogs via `addInitScript` overriding `window.alert`/`confirm`/`prompt` before page load — a separate follow-up PR could wire that into the browser tools.
 
 **Dialog policy** is configured in `config.yaml` under `browser.dialog_policy`:
 
