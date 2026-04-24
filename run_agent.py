@@ -1855,6 +1855,28 @@ class AIAgent:
                 "is_anthropic_oauth": self._is_anthropic_oauth,
             })
 
+        # ── Middleware pipeline (DeerFlow Phase 2) ──
+        try:
+            from agent.middleware import build_default_pipeline
+            self._mw_pipeline = build_default_pipeline()
+            logger.debug("Middleware pipeline initialized: %s", self._mw_pipeline)
+        except Exception as _mw_err:
+            logger.warning("Middleware pipeline init failed (continuing without): %s", _mw_err)
+            self._mw_pipeline = None
+
+    def _mw_run(self, hook: str, **kw) -> "MiddlewareState | None":
+        """Run a middleware hook safely. Returns state or None on error/no pipeline."""
+        if not self._mw_pipeline:
+            return None
+        try:
+            from agent.middleware import MiddlewareState
+            kw.setdefault("model", self.model)
+            kw.setdefault("session_id", self.session_id or "")
+            return getattr(self._mw_pipeline, f"run_{hook}_sync")(MiddlewareState(**kw))
+        except Exception:
+            logger.debug("Middleware %s error (non-fatal)", hook, exc_info=True)
+            return None
+
     def reset_session_state(self):
         """Reset all session-scoped token counters to 0 for a fresh session.
         
@@ -9237,6 +9259,11 @@ class AIAgent:
             # the OpenAI SDK. Sanitizing here prevents the 3-retry cycle.
             _sanitize_messages_surrogates(api_messages)
 
+            # ── Middleware: before_llm ──
+            _mw_st = self._mw_run("before_llm", messages=messages, api_call_count=api_call_count, task_id=effective_task_id)
+            if _mw_st and _mw_st.aborted:
+                break
+
             # Calculate approximate request size for logging
             total_chars = sum(len(str(msg)) for msg in api_messages)
             approx_tokens = estimate_messages_tokens_rough(api_messages)
@@ -10933,7 +10960,13 @@ class AIAgent:
                 normalized = _transport.normalize_response(response, **_normalize_kwargs)
                 assistant_message = normalized
                 finish_reason = normalized.finish_reason
-                
+
+                # ── Middleware: after_llm ──
+                _mw_st = self._mw_run("after_llm", messages=messages, api_call_count=api_call_count,
+                    api_response=response, tool_calls=list(assistant_message.tool_calls or []), task_id=effective_task_id)
+                if _mw_st and _mw_st.retry:
+                    continue
+
                 # Normalize content to string — some OpenAI-compatible servers
                 # (llama-server, etc.) return content as a dict or list instead
                 # of a plain string, which crashes downstream .strip() calls.
@@ -11320,7 +11353,19 @@ class AIAgent:
                         except Exception:
                             pass
 
+                    # ── Middleware: before_tool ──
+                    _mw_st = self._mw_run("before_tool", messages=messages, api_call_count=api_call_count,
+                        tool_calls=list(assistant_message.tool_calls or []), task_id=effective_task_id)
+                    if _mw_st and _mw_st.skip_tool:
+                        return {"final_response": "Tool execution blocked by middleware.", "messages": messages, "api_calls": api_call_count, "completed": False}
+
                     self._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
+
+                    # ── Middleware: after_tool ──
+                    _mw_st = self._mw_run("after_tool", messages=messages, api_call_count=api_call_count,
+                        tool_calls=list(assistant_message.tool_calls or []), task_id=effective_task_id)
+                    if _mw_st and _mw_st.aborted:
+                        break
 
                     # Reset per-turn retry counters after successful tool
                     # execution so a single truncation doesn't poison the

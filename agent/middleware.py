@@ -238,3 +238,22 @@ class MiddlewarePipeline:
     def __repr__(self) -> str:
         names = [m.name for m in self._all]
         return f"MiddlewarePipeline({names})"
+
+
+def build_default_pipeline() -> MiddlewarePipeline:
+    """Build the default middleware pipeline with all built-in middleware.
+
+    This is the single factory used by AIAgent.__init__ to create the
+    pipeline.  Session-scoped state (e.g. loop-detection windows, retry
+    counters) is managed internally by each middleware using the
+    ``session_id`` from ``MiddlewareState``.
+    """
+    from agent.middlewares.loop_detection import LoopDetectionMiddleware
+    from agent.middlewares.error_recovery import ErrorRecoveryMiddleware
+    from agent.middlewares.tool_audit import ToolAuditMiddleware
+
+    return MiddlewarePipeline([
+        LoopDetectionMiddleware(),
+        ErrorRecoveryMiddleware(),
+        ToolAuditMiddleware(),
+    ])
