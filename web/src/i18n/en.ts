@@ -6,6 +6,7 @@ export const en: Translations = {
     saving: "Saving...",
     cancel: "Cancel",
     close: "Close",
+    confirm: "Confirm",
     delete: "Delete",
     refresh: "Refresh",
     retry: "Retry",
@@ -49,8 +50,16 @@ export const en: Translations = {
     brandShort: "HA",
     closeNavigation: "Close navigation",
     footer: {
-      name: "Hermes Agent",
       org: "Nous Research",
+    },
+    activeSessionsLabel: "Active Sessions:",
+    gatewayStatusLabel: "Gateway Status:",
+    gatewayStrip: {
+      failed: "Start failed",
+      off: "Off",
+      running: "Running",
+      starting: "Starting",
+      stopped: "Stopped",
     },
     nav: {
       analytics: "Analytics",
@@ -60,10 +69,12 @@ export const en: Translations = {
       logs: "Logs",
       sessions: "Sessions",
       skills: "Skills",
-      status: "Status",
     },
     navigation: "Navigation",
     openNavigation: "Open navigation",
+    sessionsActiveCount: "{count} active",
+    statusOverview: "Status overview",
+    system: "System",
     webUi: "Web UI",
   },
 
@@ -109,6 +120,11 @@ export const en: Translations = {
     noMessages: "No messages",
     untitledSession: "Untitled session",
     deleteSession: "Delete session",
+    confirmDeleteTitle: "Delete session?",
+    confirmDeleteMessage:
+      "This permanently removes the conversation and all of its messages. This cannot be undone.",
+    sessionDeleted: "Session deleted",
+    failedToDelete: "Failed to delete session",
     previousPage: "Previous page",
     nextPage: "Next page",
     roles: {
@@ -156,6 +172,9 @@ export const en: Translations = {
   },
 
   cron: {
+    confirmDeleteMessage:
+      "This removes the job from the schedule. This cannot be undone.",
+    confirmDeleteTitle: "Delete scheduled job?",
     newJob: "New Cron Job",
     nameOptional: "Name (optional)",
     namePlaceholder: "e.g. Daily summary",
@@ -185,6 +204,8 @@ export const en: Translations = {
     searchPlaceholder: "Search skills and toolsets...",
     enabledOf: "{enabled}/{total} enabled",
     all: "All",
+    categories: "Categories",
+    filters: "Filters",
     noSkills: "No skills found. Skills are loaded from ~/.hermes/skills/",
     noSkillsMatch: "No skills match your search or filter.",
     skillCount: "{count} skill{s}",
@@ -200,6 +221,8 @@ export const en: Translations = {
 
   config: {
     configPath: "~/.hermes/config.yaml",
+    filters: "Filters",
+    sections: "Sections",
     exportConfig: "Export config as JSON",
     importConfig: "Import config from JSON",
     resetDefaults: "Reset to defaults",
@@ -234,8 +257,11 @@ export const en: Translations = {
   },
 
   env: {
-    description: "Manage API keys and secrets stored in",
     changesNote: "Changes are saved to disk immediately. Active sessions pick up new keys automatically.",
+    confirmClearMessage:
+      "The stored value for this variable will be removed from your .env file. This cannot be undone from the UI.",
+    confirmClearTitle: "Clear this key?",
+    description: "Manage API keys and secrets stored in",
     hideAdvanced: "Hide Advanced",
     showAdvanced: "Show Advanced",
     llmProviders: "LLM Providers",

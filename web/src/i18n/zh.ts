@@ -6,6 +6,7 @@ export const zh: Translations = {
     saving: "保存中...",
     cancel: "取消",
     close: "关闭",
+    confirm: "确认",
     delete: "删除",
     refresh: "刷新",
     retry: "重试",
@@ -49,8 +50,16 @@ export const zh: Translations = {
     brandShort: "HA",
     closeNavigation: "关闭导航",
     footer: {
-      name: "Hermes Agent",
       org: "Nous Research",
+    },
+    activeSessionsLabel: "活跃会话：",
+    gatewayStatusLabel: "网关状态：",
+    gatewayStrip: {
+      failed: "启动失败",
+      off: "关闭",
+      running: "运行中",
+      starting: "启动中",
+      stopped: "已停止",
     },
     nav: {
       analytics: "分析",
@@ -60,10 +69,12 @@ export const zh: Translations = {
       logs: "日志",
       sessions: "会话",
       skills: "技能",
-      status: "状态",
     },
     navigation: "导航",
     openNavigation: "打开导航",
+    sessionsActiveCount: "{count} 个活跃",
+    statusOverview: "状态概览",
+    system: "系统",
     webUi: "管理面板",
   },
 
@@ -109,6 +120,10 @@ export const zh: Translations = {
     noMessages: "暂无消息",
     untitledSession: "无标题会话",
     deleteSession: "删除会话",
+    confirmDeleteTitle: "删除会话？",
+    confirmDeleteMessage: "此操作将永久删除对话及其所有消息，无法恢复。",
+    sessionDeleted: "会话已删除",
+    failedToDelete: "删除会话失败",
     previousPage: "上一页",
     nextPage: "下一页",
     roles: {
@@ -156,6 +171,8 @@ export const zh: Translations = {
   },
 
   cron: {
+    confirmDeleteMessage: "将从此计划移除该任务，此操作无法撤销。",
+    confirmDeleteTitle: "删除定时任务？",
     newJob: "新建定时任务",
     nameOptional: "名称（可选）",
     namePlaceholder: "例如：每日总结",
@@ -185,6 +202,8 @@ export const zh: Translations = {
     searchPlaceholder: "搜索技能和工具集...",
     enabledOf: "已启用 {enabled}/{total}",
     all: "全部",
+    categories: "分类",
+    filters: "筛选",
     noSkills: "未找到技能。技能从 ~/.hermes/skills/ 加载",
     noSkillsMatch: "没有匹配的技能。",
     skillCount: "{count} 个技能",
@@ -200,6 +219,8 @@ export const zh: Translations = {
 
   config: {
     configPath: "~/.hermes/config.yaml",
+    filters: "筛选",
+    sections: "分类",
     exportConfig: "导出配置为 JSON",
     importConfig: "从 JSON 导入配置",
     resetDefaults: "恢复默认值",
@@ -234,8 +255,10 @@ export const zh: Translations = {
   },
 
   env: {
-    description: "管理存储在以下位置的 API 密钥和凭据",
     changesNote: "更改会立即保存到磁盘。活跃会话将自动获取新密钥。",
+    confirmClearMessage: "该变量的已存值将从 .env 文件中删除。无法在此界面撤销。",
+    confirmClearTitle: "清除此密钥？",
+    description: "管理存储在以下位置的 API 密钥和凭据",
     hideAdvanced: "隐藏高级选项",
     showAdvanced: "显示高级选项",
     llmProviders: "LLM 提供商",
