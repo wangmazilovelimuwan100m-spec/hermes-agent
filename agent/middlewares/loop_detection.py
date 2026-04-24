@@ -13,6 +13,8 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import threading
+import time
 from collections import deque
 from typing import Any, Optional
 
@@ -55,16 +57,22 @@ class LoopDetectionMiddleware(Middleware):
     hooks = ["after_tool"]
     name = "LoopDetectionMiddleware"
     priority = 10  # Run early in after_tool chain
+    fail_fast = True  # Loop detection failure must not be silently swallowed
 
     def __init__(
         self,
         window_size: int = 10,
         threshold: int = 3,
+        session_ttl: float = 3600.0,
     ) -> None:
         self._window_size = window_size
         self._threshold = threshold
+        self._session_ttl = session_ttl
         # Per-session state: {session_id: deque_of_signatures}
         self._history: dict[str, deque[str]] = {}
+        # Last access time per session for TTL eviction.
+        self._last_access: dict[str, float] = {}
+        self._lock = threading.Lock()
 
     # ── Middleware hook ──────────────────────────────────────────────
 
@@ -99,41 +107,61 @@ class LoopDetectionMiddleware(Middleware):
 
         sig = _compute_call_signature(tool_name, tool_args)
         sid = state.session_id or "default"
-        history = self._history.setdefault(sid, deque(maxlen=self._window_size))
-        history.append(sig)
+        with self._lock:
+            now = time.monotonic()
+            self._last_access[sid] = now
+            history = self._history.setdefault(sid, deque(maxlen=self._window_size))
+            # Evict expired sessions periodically.
+            self._evict_expired(now)
+            history.append(sig)
 
-        # Count consecutive occurrences at the tail of the deque.
-        consecutive = 0
-        for s in reversed(history):
-            if s == sig:
-                consecutive += 1
-            else:
-                break
+            # Count consecutive occurrences at the tail of the deque.
+            consecutive = 0
+            for s in reversed(history):
+                if s == sig:
+                    consecutive += 1
+                else:
+                    break
 
-        if consecutive >= self._threshold:
-            logger.warning(
-                "Loop detected: %s called %d consecutive times (session=%s)",
-                tool_name, consecutive, sid,
-            )
-            interrupt_msg = (
-                "[System: You have been calling the same tool with the same arguments "
-                f"repeatedly ({tool_name}, {consecutive} times). This indicates a loop. "
-                "Please try a different approach, change the arguments, or stop if the "
-                "task is already complete.]"
-            )
-            state.messages.append({"role": "user", "content": interrupt_msg})
-            state.aborted = True
-            # Clear history so the same loop isn't re-detected immediately.
-            history.clear()
+            if consecutive >= self._threshold:
+                logger.warning(
+                    "Loop detected: %s called %d consecutive times (session=%s)",
+                    tool_name, consecutive, sid,
+                )
+                interrupt_msg = (
+                    "[System: You have been calling the same tool with the same arguments "
+                    f"repeatedly ({tool_name}, {consecutive} times). This indicates a loop. "
+                    "Please try a different approach, change the arguments, or stop if the "
+                    "task is already complete.]"
+                )
+                state.messages.append({"role": "user", "content": interrupt_msg})
+                state.aborted = True
+                # Clear history so the same loop isn't re-detected immediately.
+                history.clear()
 
         return state
 
     # ── Housekeeping ─────────────────────────────────────────────────
 
+    def _evict_expired(self, now: float) -> None:
+        """Remove sessions whose last access exceeds the TTL.  Must be called
+        under ``self._lock``."""
+        expired = [
+            sid for sid, ts in self._last_access.items()
+            if now - ts > self._session_ttl
+        ]
+        for sid in expired:
+            self._history.pop(sid, None)
+            del self._last_access[sid]
+
     def clear_session(self, session_id: str) -> None:
         """Remove history for a session (call on session reset/end)."""
-        self._history.pop(session_id, None)
+        with self._lock:
+            self._history.pop(session_id, None)
+            self._last_access.pop(session_id, None)
 
     def clear_all(self) -> None:
         """Remove all session histories."""
-        self._history.clear()
+        with self._lock:
+            self._history.clear()
+            self._last_access.clear()

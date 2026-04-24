@@ -87,6 +87,12 @@ class Middleware:
     # Human-readable name for logging / diagnostics.
     name: str = ""
 
+    # If True, an exception from this middleware will propagate up through
+    # the pipeline instead of being silently swallowed.  Use for critical
+    # middleware where silent failure is worse than crashing (e.g. loop
+    # detection, security audit).
+    fail_fast: bool = False
+
     def __init_subclass__(cls, **kwargs: Any) -> None:
         if not cls.name:
             cls.name = cls.__name__
@@ -162,8 +168,15 @@ class MiddlewarePipeline:
     def _run_sync(coro_fn, state: MiddlewareState) -> MiddlewareState:
         """Run an async coroutine from synchronous code.
 
-        If an event loop is already running (gateway context), schedule the
-        coroutine on it.  Otherwise, use ``asyncio.run()`` (CLI context).
+        If an event loop is already running (gateway context), we avoid the
+        nested ``asyncio.run()`` pattern which is fragile and loses contextvars.
+        Instead, since all current middleware hooks are pure computation with no
+        real async I/O, we use ``loop.run_until_complete()`` on a fresh loop in
+        a helper thread.  This preserves the calling loop's state while safely
+        executing the coroutine.
+
+        When no event loop is running (CLI context), ``asyncio.run()`` is used
+        directly.
         """
         import asyncio
 
@@ -173,13 +186,30 @@ class MiddlewarePipeline:
             loop = None
 
         if loop is not None and loop.is_running():
-            # We're inside an existing event loop — create a future and
-            # schedule the coroutine.  This is safe because the middleware
-            # hooks are fast (no blocking I/O).
+            # Gateway context — avoid asyncio.run() which would fail with a
+            # nested-loop error.  Run the coroutine on a *new* event loop in
+            # a separate thread (safe because middleware has no real async I/O
+            # that depends on the outer loop's state).
             import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                future = pool.submit(asyncio.run, coro_fn(state))
-                return future.result(timeout=30)
+            import threading
+
+            result_box: list[MiddlewareState] = []
+            error_box: list[Exception] = []
+
+            def _thread_target():
+                try:
+                    result_box.append(asyncio.run(coro_fn(state)))
+                except Exception as exc:
+                    error_box.append(exc)
+
+            t = threading.Thread(target=_thread_target, daemon=True)
+            t.start()
+            t.join(timeout=30)
+            if error_box:
+                raise error_box[0]
+            if not result_box:
+                raise TimeoutError("Middleware sync wrapper timed out after 30s")
+            return result_box[0]
         else:
             return asyncio.run(coro_fn(state))
 
@@ -194,6 +224,12 @@ class MiddlewarePipeline:
                 handler = getattr(m, hook_name)
                 state = await handler(state)
             except Exception:
+                if getattr(m, "fail_fast", False):
+                    logger.exception(
+                        "Middleware %s raised in %s — fail_fast enabled, propagating",
+                        m.name, hook_name,
+                    )
+                    raise
                 logger.exception(
                     "Middleware %s raised in %s — skipping", m.name, hook_name
                 )

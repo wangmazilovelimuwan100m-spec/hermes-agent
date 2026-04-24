@@ -96,6 +96,7 @@ class ToolAuditMiddleware(Middleware):
     hooks = ["before_tool"]
     name = "ToolAuditMiddleware"
     priority = 5  # Run very early — safety first
+    fail_fast = True  # Security audit failure must not be silently swallowed
 
     def __init__(
         self,

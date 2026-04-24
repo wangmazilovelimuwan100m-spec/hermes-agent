@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import time
 from typing import Any, Optional
 
@@ -54,13 +55,17 @@ class ErrorRecoveryMiddleware(Middleware):
         llm_backoff_base: float = 2.0,
         llm_backoff_max: float = 60.0,
         tool_timeout_retry: bool = True,
+        session_ttl: float = 3600.0,
     ) -> None:
         self._max_llm_retries = max_llm_retries
         self._llm_backoff_base = llm_backoff_base
         self._llm_backoff_max = llm_backoff_max
         self._tool_timeout_retry = tool_timeout_retry
+        self._session_ttl = session_ttl
         # Per-session retry counters: {session_id: {"llm": int, "tool:<call_id>": int}}
         self._retry_counts: dict[str, dict[str, int]] = {}
+        self._last_access: dict[str, float] = {}
+        self._lock = threading.Lock()
 
     # ── LLM error recovery ──────────────────────────────────────────
 
@@ -88,7 +93,7 @@ class ErrorRecoveryMiddleware(Middleware):
             )
             return state
 
-        self._get_counter(state, "llm", increment=True)
+        count = self._get_counter(state, "llm", increment=True)
         wait = jittered_backoff(
             count, base_delay=self._llm_backoff_base, max_delay=self._llm_backoff_max
         )
@@ -200,20 +205,41 @@ class ErrorRecoveryMiddleware(Middleware):
         self, state: MiddlewareState, key: str, *, reset: bool = False, increment: bool = False
     ) -> int:
         sid = state.session_id or "default"
-        bucket = self._retry_counts.setdefault(sid, {})
-        if reset:
-            bucket[key] = 0
-            return 0
-        val = bucket.get(key, 0)
-        if increment:
-            bucket[key] = val + 1
-            return val + 1
-        return val
+        with self._lock:
+            now = time.monotonic()
+            self._last_access[sid] = now
+            self._evict_expired(now)
+            bucket = self._retry_counts.setdefault(sid, {})
+            if reset:
+                bucket[key] = 0
+                return 0
+            val = bucket.get(key, 0)
+            if increment:
+                bucket[key] = val + 1
+                return val + 1
+            return val
+
+    def _evict_expired(self, now: float) -> None:
+        """Remove sessions whose last access exceeds the TTL.
+
+        Must be called under ``self._lock``.
+        """
+        expired = [
+            sid for sid, ts in self._last_access.items()
+            if now - ts > self._session_ttl
+        ]
+        for sid in expired:
+            self._retry_counts.pop(sid, None)
+            del self._last_access[sid]
 
     def clear_session(self, session_id: str) -> None:
         """Remove retry counters for a session."""
-        self._retry_counts.pop(session_id, None)
+        with self._lock:
+            self._retry_counts.pop(session_id, None)
+            self._last_access.pop(session_id, None)
 
     def clear_all(self) -> None:
         """Remove all retry counters."""
-        self._retry_counts.clear()
+        with self._lock:
+            self._retry_counts.clear()
+            self._last_access.clear()
